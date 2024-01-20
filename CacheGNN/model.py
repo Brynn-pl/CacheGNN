@@ -249,7 +249,7 @@ class StarSessionGraph(Module):
             scores = 12 * scores
         return scores, a
 
-    def forward(self, inputs, A, mask, session_len, D, A_hat):
+    def forward(self, inputs, A, mask, D, A_hat):
 
         hidden = self.embedding(inputs)
         hidden = self.layernorm3(hidden)
@@ -272,7 +272,7 @@ def trans_to_cpu(variable):
 
 
 def forward(model, i, data):
-    alias_inputs, A, items, mask, targets, session_len = data.get_slice(i)
+    alias_inputs, A, items, mask, targets = data.get_slice(i)
     alias_inputs = trans_to_cuda(torch.Tensor(alias_inputs).long())
 
     items = trans_to_cuda(torch.Tensor(items).long())
@@ -282,7 +282,7 @@ def forward(model, i, data):
 
     A = trans_to_cuda(torch.Tensor(A).float())
     mask = trans_to_cuda(torch.Tensor(mask).long())
-    hidden, s = model(items, A, mask, session_len, D_hat, A_hat)
+    hidden, s = model(items, A, mask, D_hat, A_hat)
 
     if model.norm:
         seq_shape = list(hidden.size())
