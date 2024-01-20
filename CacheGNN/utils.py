@@ -92,7 +92,7 @@ class Data():
 
     def get_slice(self, i):
         inputs, mask, targets = self.inputs[i], self.mask[i], self.targets[i]
-        items, n_node, A, alias_inputs, session_len = [], [], [], [], []
+        items, n_node, A, alias_inputs = [], [], [], []
         for u_input in inputs:
             n_node.append(len(np.unique(u_input))) #计算当前session中唯一节点的数量
             # session_len.append(len(u_input))
