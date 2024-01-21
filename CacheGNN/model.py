@@ -12,31 +12,31 @@ from tqdm import tqdm
 
 
 class GCN(Module):
-    def __init__(self, layers,batch_size,emb_size=100):
+    def __init__(self, batch_size, layers=3, emb_size=100):
         super(GCN, self).__init__()
         self.emb_size = emb_size
         self.batch_size = batch_size
         self.layers = layers
-        def forward(self, hidden, D, A):
-            # zeros = torch.cuda.FloatTensor(1,self.emb_size).fill_(0) #创建一个全零向量
-            # # zeros = torch.zeros([1,self.emb_size])
-            # item_embedding = torch.cat([zeros, item_embedding], 0)
-            # seq_h = []
-            # for i in torch.arange(len(session_item)):
-            #     seq_h.append(torch.index_select(item_embedding, 0, session_item[i])) #构建每个session的项目嵌入列表
-            # seq_h1 = trans_to_cuda(torch.tensor([item.cpu().detach().numpy() for item in seq_h]))
-            
-            # session_emb_lgcn = torch.div(torch.sum(hidden, 1), session_len) #计算每个session的嵌入向量的平均值
-            session_emb_lgcn = hidden
-            session = [session_emb_lgcn] #相当于跨序列图的节点集合 
-            DA = torch.mm(D, A).float()
-            for i in range(self.layers):
-                session_emb_lgcn = torch.mm(DA, session_emb_lgcn)
-                session.append(session_emb_lgcn) #乘法实现图卷积
-            #session1 = trans_to_cuda(torch.tensor([item.cpu().detach().numpy() for item in session]))
-            #session_emb_lgcn = torch.sum(session1, 0)
-            session_emb_lgcn = np.sum(session, 0)/ (self.layers+1) #计算所有图卷积层的输出的平均值
-            return session_emb_lgcn
+    def forward(self, hidden, D, A):
+        # zeros = torch.cuda.FloatTensor(1,self.emb_size).fill_(0) #创建一个全零向量
+        # # zeros = torch.zeros([1,self.emb_size])
+        # item_embedding = torch.cat([zeros, item_embedding], 0)
+        # seq_h = []
+        # for i in torch.arange(len(session_item)):
+        #     seq_h.append(torch.index_select(item_embedding, 0, session_item[i])) #构建每个session的项目嵌入列表
+        # seq_h1 = trans_to_cuda(torch.tensor([item.cpu().detach().numpy() for item in seq_h]))
+        
+        # session_emb_lgcn = torch.div(torch.sum(hidden, 1), session_len) #计算每个session的嵌入向量的平均值
+        session_emb_lgcn = trans_to_cuda(hidden.squeeze(dim=1))
+        session = [session_emb_lgcn] #session记录gcn每一层的输出 
+        DA = torch.mm(D, A).float()
+        for i in range(self.layers):
+            session_emb_lgcn = torch.mm(DA, session_emb_lgcn) #乘法实现图卷积
+            session.append(session_emb_lgcn) 
+        #session1 = trans_to_cuda(torch.tensor([item.cpu().detach().numpy() for item in session]))
+        #session_emb_lgcn = torch.sum(session1, 0)
+        session_emb_lgcn = np.sum(session, 0)/ (self.layers+1) #计算所有图卷积层的输出的平均值
+        return session_emb_lgcn
     # def forward(self, item_embedding, D, A, session_item, session_len):
     #     zeros = torch.cuda.FloatTensor(1,self.emb_size).fill_(0) #创建一个全零向量
     #     # zeros = torch.zeros([1,self.emb_size])
@@ -133,7 +133,7 @@ class StarGNN(Module):
             assert not torch.isnan(beta).any()
             s = torch.sum(beta * hidden, dim=1, keepdim=True)
 
-        # HighWay Network处理中心虚拟节点s
+        # HighWay Network处理普通节点
         g = self.Wg(torch.cat((hidden0, hidden), dim=-1)).sigmoid_()
         assert not torch.isnan(hidden).any()
         hidden = g * hidden0 + (1 - g) * hidden
@@ -193,7 +193,7 @@ class StarSessionGraph(Module):
         self.num_heads = opt.heads
         self.embedding = nn.Embedding(self.n_node, self.hidden_size)
         self.gnn = StarGNN(self.hidden_size, step=opt.step)
-        self.gcn = GCN(1,self.batch_size)
+        self.gcn = GCN(self.batch_size)
         self.attn = nn.MultiheadAttention(self.hidden_size, 1)
         self.linear_one = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
         self.linear_two = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
@@ -256,6 +256,7 @@ class StarSessionGraph(Module):
         hidden, s = self.gnn(A, hidden, mask)
         v_nodes = self.gcn(s, D, A_hat)
         return hidden, v_nodes
+        # return hidden, s
 
 def trans_to_cuda(variable):
     if torch.cuda.is_available():
@@ -274,8 +275,8 @@ def trans_to_cpu(variable):
 def forward(model, i, data):
     alias_inputs, A, items, mask, targets = data.get_slice(i)
     alias_inputs = trans_to_cuda(torch.Tensor(alias_inputs).long())
-
     items = trans_to_cuda(torch.Tensor(items).long())
+   
     A_hat, D_hat = data.get_overlap(items)
     A_hat = trans_to_cuda(torch.Tensor(A_hat))
     D_hat = trans_to_cuda(torch.Tensor(D_hat))
