@@ -10,6 +10,8 @@ from torch.nn import Module, Parameter
 import torch.nn.functional as F
 from tqdm import tqdm
 
+from loguru import logger
+
 
 class GCN(Module):
     def __init__(self, batch_size, layers=3, emb_size=100):
@@ -306,6 +308,7 @@ def forward(model, i, data):
 def train_test(model, train_data, test_data):
     model.scheduler.step()
     print('start training: ', datetime.datetime.now())
+    logger.info(f'start training: {datetime.datetime.now()}')
     model.train()
     total_loss = 0.0
     slices = train_data.generate_batch(model.batch_size)
@@ -319,9 +322,12 @@ def train_test(model, train_data, test_data):
         total_loss += loss
         if j % int(len(slices) / 5 + 1) == 0:
             print('[%d/%d] Loss: %.4f' % (j, len(slices), loss.item()))
+            logger.info('{}/{} Loss: {:.4f}'.format(j, len(slices), loss.item()))
     print('\tLoss:\t%.3f' % total_loss)
+    logger.info('\t Loss: {:.3f}'.format(total_loss))
 
     print('start predicting: ', datetime.datetime.now())
+    logger.info(f'Start Predicting: {datetime.datetime.now()}')
     model.eval()
     hit, mrr, phi = [], [], []
     slices = test_data.generate_batch(model.batch_size)
@@ -348,6 +354,8 @@ def train_test(model, train_data, test_data):
 
 def formal_test(model, train_data, test_data):
     print('start predicting: ', datetime.datetime.now())
+    logger.info(f'Start Predicting: {datetime.datetime.now()}')
+    
     model.eval()
     hit, mrr, phi = [], [], []
     slices = test_data.generate_batch(model.batch_size)
