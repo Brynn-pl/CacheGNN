@@ -99,13 +99,13 @@ def main():
                 best_epoch[0] = epoch
                 flag = 1
                 save_path = f'../checkpoint/{opt.dataset}-best_hit.pth'
-                torch.save(model.state_dict(), path)
+                torch.save(model.state_dict(), save_path)
             if mrr >= best_result[1]:
                 best_result[1] = mrr
                 best_epoch[1] = epoch
                 flag = 1
                 save_path = f'../checkpoint/{opt.dataset}-best_mrr.pth'
-                torch.save(model.state_dict(), path)
+                torch.save(model.state_dict(), save_path)
             print('hit:')
             print(hit)
             print("\n")
