@@ -42,6 +42,7 @@ parser.add_argument('--use_attn_conv', type=str, default="True")
 parser.add_argument('--heads', type=int, default=8, help='number of attention heads')
 parser.add_argument('--scale', default=True, help='scaling factor sigma')
 parser.add_argument('--norm', default=True, help='adapt NISER, l2 norm over item and session embedding')
+parser.add_argument('--cutnum', type=int, default=200, help='cutnum')
 opt = parser.parse_args()
 print(opt)
 
@@ -99,12 +100,16 @@ def main():
                 best_epoch[0] = epoch
                 flag = 1
                 save_path = f'../checkpoint/{opt.dataset}-best_hit.pth'
+                if not os.path.exists(os.path.dirname(save_path)):
+                    os.makedirs(os.path.dirname(save_path))
                 torch.save(model.state_dict(), save_path)
             if mrr >= best_result[1]:
                 best_result[1] = mrr
                 best_epoch[1] = epoch
                 flag = 1
                 save_path = f'../checkpoint/{opt.dataset}-best_mrr.pth'
+                if not os.path.exists(os.path.dirname(save_path)):
+                    os.makedirs(os.path.dirname(save_path))                
                 torch.save(model.state_dict(), save_path)
             print('hit:')
             print(hit)
