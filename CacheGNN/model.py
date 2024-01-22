@@ -13,6 +13,12 @@ from tqdm import tqdm
 from loguru import logger
 
 
+def layer_normalization(x):
+    x = x - torch.mean(x, -1).unsqueeze(-1)
+    norm_x = torch.sqrt(torch.sum(x**2, -1)).unsqueeze(-1)
+    y = x / norm_x
+    return y
+
 class GCN(Module):
     def __init__(self, batch_size, layers=3, emb_size=100):
         super(GCN, self).__init__()
@@ -66,6 +72,7 @@ class StarGNN(Module):
         self.hidden_size = hidden_size
         self.input_size = hidden_size * 2
         self.gate_size = 3 * hidden_size
+        
         self.w_ih = Parameter(torch.Tensor(self.gate_size, self.input_size))
         self.w_hh = Parameter(torch.Tensor(self.gate_size, self.hidden_size))
         self.b_ih = Parameter(torch.Tensor(self.gate_size))
@@ -194,13 +201,16 @@ class StarSessionGraph(Module):
         self.batch_size = opt.batchSize
         self.num_heads = opt.heads
         self.embedding = nn.Embedding(self.n_node, self.hidden_size)
+        self.pos_embedding = nn.Embedding(opt.cutnum, self.hidden_size)
         self.gnn = StarGNN(self.hidden_size, step=opt.step)
         self.gcn = GCN(self.batch_size)
         self.attn = nn.MultiheadAttention(self.hidden_size, 1)
+        
         self.linear_one = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
         self.linear_two = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
-        self.linear_three = nn.Linear(self.hidden_size, self.num_heads, bias=False)
+        self.linear_three = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
         self.linear_four = nn.Linear(self.hidden_size, self.hidden_size)
+       
         self.layernorm1 = nn.LayerNorm(self.hidden_size)
         self.layernorm2 = nn.LayerNorm(self.hidden_size)
         self.layernorm3 = nn.LayerNorm(self.hidden_size)
@@ -219,8 +229,8 @@ class StarSessionGraph(Module):
         self.linear_q = nn.ModuleList()
         for i in range(self.last_k):
             self.linear_q.append(nn.Linear((i + 1) * self.hidden_size, self.hidden_size))
-        self.mattn = LastAttenion(self.hidden_size, self.heads, self.dot, self.l_p, last_k=self.last_k,
-                                  use_attn_conv=self.use_attn_conv)
+        # self.mattn = LastAttenion(self.hidden_size, self.heads, self.dot, self.l_p, last_k=self.last_k,
+        #                           use_attn_conv=self.use_attn_conv)
         self.gate = nn.Linear(2 * self.hidden_size, 1, bias=False)
         self.dropout = 0.1
 
@@ -230,26 +240,53 @@ class StarSessionGraph(Module):
         for weight in self.parameters():
             weight.data.normal_(std=0.1)
 
-    def compute_scores(self, hidden, s, mask):
-        hts = []
-        lengths = torch.sum(mask, dim=1)
-        for i in range(self.last_k):
-            hts.append(self.linear_q[i](torch.cat([hidden[torch.arange(mask.size(0)).long(), torch.clamp(lengths - (j + 1), -1, 1000)] for j in range(i + 1)], dim=-1)).unsqueeze(1))
-        ht0 = hidden[torch.arange(mask.size(0)).long(), torch.sum(mask, 1) - 1]
-        hts = torch.cat(hts, dim=1)
-        hts = hts.div(torch.norm(hts, p=2, dim=1, keepdim=True) + 1e-12)
-        hidden = hidden[:, :mask.size(1)]
-        ais, weights = self.mattn(hts, hidden, mask)
-        a = self.linear_transform(torch.cat((ais.squeeze(), ht0), 1))
-        b = self.embedding.weight[1:]
-        if self.norm:
-            a = a.div(torch.norm(a, p=2, dim=1, keepdim=True) + 1e-12)
-            b = b.div(torch.norm(b, p=2, dim=1, keepdim=True) + 1e-12)
-        b = F.dropout(b, self.dropout, training=self.training)
+    def compute_scores(self, seq_hidden, s, mask):
+        # Pos Embedding
+        bs, item_num = seq_hidden.shape[0], seq_hidden.shape[1]
+        index = torch.arange(item_num).unsqueeze(0)
+        pos_index = index.repeat(bs, 1).view(bs, item_num)
+        pos_index = trans_to_cuda(torch.Tensor(pos_index.float()).long())
+        pos_hidden = self.pos_embedding(pos_index)
+        # pos_hidden = pos_hidden.unsqueeze(0).repeat(bs, 1, 1)
+        seq_hidden = seq_hidden + pos_hidden
+
+        # Last Item
+        ht = seq_hidden[torch.arange(mask.shape[0]).long(), torch.sum(mask, 1) - 1]  # batch_size x latent_size
+
+        q1 = self.linear_one(ht).view(ht.shape[0], 1, ht.shape[1])  # batch_size x 1 x latent_size
+        q2 = self.linear_two(s).view(s.shape[0], 1, s.shape[1])  # batch_size x 1 x latent_size
+        q3 = self.linear_three(seq_hidden)  # batch_size x seq_length x latent_size
+        alpha = self.linear_four(torch.sigmoid(q1 + q2 + q3))
+        a = torch.sum(alpha * seq_hidden * mask.view(mask.shape[0], -1, 1).float(), 1)
+
+        a = self.linear_transform(torch.cat([a, ht], 1))
+        b = self.embedding.weight[1:]  # n_nodes x latent_size
+
+        a = layer_normalization(a)
+        b = layer_normalization(b)
         scores = torch.matmul(a, b.transpose(1, 0))
         if self.scale:
             scores = 12 * scores
-        return scores, a
+        return scores
+        # hts = []
+        # lengths = torch.sum(mask, dim=1)
+        # for i in range(self.last_k):
+        #     hts.append(self.linear_q[i](torch.cat([hidden[torch.arange(mask.size(0)).long(), torch.clamp(lengths - (j + 1), -1, 1000)] for j in range(i + 1)], dim=-1)).unsqueeze(1))
+        # ht0 = hidden[torch.arange(mask.size(0)).long(), torch.sum(mask, 1) - 1]
+        # hts = torch.cat(hts, dim=1)
+        # hts = hts.div(torch.norm(hts, p=2, dim=1, keepdim=True) + 1e-12)
+        # hidden = hidden[:, :mask.size(1)]
+        # ais, weights = self.mattn(hts, hidden, mask)
+        # a = self.linear_transform(torch.cat((ais.squeeze(), ht0), 1))
+        # b = self.embedding.weight[1:]
+        # if self.norm:
+        #     a = a.div(torch.norm(a, p=2, dim=1, keepdim=True) + 1e-12)
+        #     b = b.div(torch.norm(b, p=2, dim=1, keepdim=True) + 1e-12)
+        # b = F.dropout(b, self.dropout, training=self.training)
+        # scores = torch.matmul(a, b.transpose(1, 0))
+        # if self.scale:
+        #     scores = 12 * scores
+        # return scores, a
 
     def forward(self, inputs, A, mask, D, A_hat):
 
@@ -301,8 +338,8 @@ def forward(model, i, data):
         norms = torch.norm(seq_hidden, p=2, dim=1)  # l2 norm over session embedding
         seq_hidden = seq_hidden.div(norms.unsqueeze(-1).expand_as(seq_hidden))
         seq_hidden = seq_hidden.view(seq_shape)
-    sc,a = model.compute_scores(seq_hidden, s, mask)
-    return targets, sc, a
+    sc = model.compute_scores(seq_hidden, s, mask)
+    return targets, sc
 
 
 def train_test(model, train_data, test_data):
@@ -314,7 +351,7 @@ def train_test(model, train_data, test_data):
     slices = train_data.generate_batch(model.batch_size)
     for i, j in tqdm(zip(slices, np.arange(len(slices))), total=len(slices)):
         model.optimizer.zero_grad()
-        targets, scores, a_hidden = forward(model, i, train_data)
+        targets, scores = forward(model, i, train_data)
         targets = trans_to_cuda(torch.Tensor(targets).long())
         loss = model.loss_function(scores, targets - 1)
         loss.backward()
@@ -332,7 +369,7 @@ def train_test(model, train_data, test_data):
     hit, mrr, phi = [], [], []
     slices = test_data.generate_batch(model.batch_size)
     for i in slices:
-        targets, scores, a_hidden = forward(model, i, test_data)
+        targets, scores = forward(model, i, test_data)
         sub_scores = scores.topk(20)[1]
         sub_scores = trans_to_cpu(sub_scores).detach().numpy()
         phic = 0
@@ -360,7 +397,7 @@ def formal_test(model, train_data, test_data):
     hit, mrr, phi = [], [], []
     slices = test_data.generate_batch(model.batch_size)
     for i in slices:
-        targets, scores, a_hidden = forward(model, i, test_data)
+        targets, scores = forward(model, i, test_data)
         sub_scores = scores.topk(20)[1]
         sub_scores = trans_to_cpu(sub_scores).detach().numpy()
         phic = 0
